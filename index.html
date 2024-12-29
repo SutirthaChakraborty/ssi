@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Virtual String Instrument (Enhanced with Buffering)</title>
+  <!-- MediaPipe Libraries -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js"
+    crossorigin="anonymous"
+  ></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1635989137/holistic.js"
+    crossorigin="anonymous"
+  ></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #f0f0f0;
+      font-family: Arial, sans-serif;
+    }
+    h1 {
+      margin: 0;
+      margin-bottom: 10px;
+    }
+    #videoElement {
+      border: 3px solid #333;
+      border-radius: 8px;
+      background-color: #000;
+      display: block;
+    }
+    #outputCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      border: 3px solid #333;
+      border-radius: 8px;
+      pointer-events: none;
+    }
+    #cameraContainer {
+      position: relative;
+      width: 640px;
+      height: 480px;
+      margin-bottom: 10px;
+    }
+    #status {
+      margin: 10px 0;
+      padding: 10px;
+      border-radius: 4px;
+      background-color: #fff3cd;
+      border: 1px solid #ffeeba;
+      color: #856404;
+      width: 640px;
+      box-sizing: border-box;
+      text-align: center;
+    }
+    #controls {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 10px 0;
+      width: 640px;
+      justify-content: space-around;
+      gap: 20px;
+    }
+    .control-group {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      justify-content: space-between;
+    }
+    #controls label {
+      margin-right: 5px;
+      width: 180px;
+    }
+    #controls input[type=range] {
+      width: 200px;
+      margin: 0 10px;
+    }
+    #controls select {
+      width: 200px;
+      margin: 0 10px;
+    }
+    #detectionLog {
+      width: 640px;
+      height: 150px;
+      border: 1px solid #ccc;
+      padding: 10px;
+      overflow-y: auto;
+      background-color: white;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    #infoPanel {
+      width: 640px;
+      margin-top: 10px;
+      background: #fff;
+      padding: 10px;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    #infoPanel div {
+      margin: 5px 0;
+    }
+    .label-strong {
+      font-weight: bold;
+    }
+    /* User Manual Styles */
+    #manual {
+      width: 640px;
+      margin-top: 20px;
+      background: #fff;
+      padding: 15px;
+      border-radius: 4px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+    }
+    #manual h2 {
+      margin-top: 0;
+    }
+    #manual ul, #manual ol {
+      margin-left: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Virtual String Instrument (Enhanced with Buffering)</h1>
+  <div id="status">Initializing camera...</div>
+
+  <!-- Camera & Canvas Overlays -->
+  <div id="cameraContainer">
+    <video id="videoElement" width="640" height="480" autoplay playsinline></video>
+    <canvas id="outputCanvas" width="640" height="480"></canvas>
+  </div>
+
+  <!-- Controls: Sliders for velocity sensitivity and window size, and Chord Selection -->
+  <div id="controls">
+    <div class="control-group">
+      <label for="sensitivityRange">Base Sensitivity:</label>
+      <input type="range" id="sensitivityRange" min="1" max="100" value="50" />
+      <span id="sensitivityValue">0.50</span>
+    </div>
+    <div class="control-group">
+      <label for="windowRange">Movement Window:</label>
+      <input type="range" id="windowRange" min="1" max="20" value="5" />
+      <span id="windowValue">5</span>
+    </div>
+    <div class="control-group">
+      <label for="chord1Select">Chord 1 (Index Finger):</label>
+      <select id="chord1Select"></select>
+    </div>
+    <div class="control-group">
+      <label for="chord2Select">Chord 2 (Middle Finger):</label>
+      <select id="chord2Select"></select>
+    </div>
+    <div class="control-group">
+      <label for="chord3Select">Chord 3 (Ring Finger):</label>
+      <select id="chord3Select"></select>
+    </div>
+    <div class="control-group">
+      <label for="chord4Select">Chord 4 (Pinky Finger):</label>
+      <select id="chord4Select"></select>
+    </div>
+  </div>
+
+  <!-- Info Panel showing chord, octave, velocity, mode, etc. -->
+  <div id="infoPanel">
+    <div><span class="label-strong">Active Chord:</span> <span id="activeChord">None</span></div>
+    <div><span class="label-strong">Current Octave:</span> <span id="currentOctave">4</span></div>
+    <div><span class="label-strong">Velocity:</span> <span id="velocityVal">0</span></div>
+    <div><span class="label-strong">Mode:</span> <span id="modeVal">None</span></div>
+    <div><span class="label-strong">Sound Status:</span> <span id="soundStatus">Muted</span></div>
+  </div>
+
+  <!-- Detection Log for debugging (optional) -->
+  <div id="detectionLog"></div>
+
+  <script>
+    /*****************************************************************
+     *  Utility & Logging
+     *****************************************************************/
+    function log(message, isError = false) {
+      const logDiv = document.getElementById('detectionLog');
+      const timestamp = new Date().toLocaleTimeString();
+      const color = isError ? 'color: red;' : '';
+      logDiv.innerHTML += `<div style="${color}">[${timestamp}] ${message}</div>`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+      if (isError) {
+        console.error(message);
+      } else {
+        console.log(message);
+      }
+    }
+    function updateStatus(message, isError = false) {
+      const statusDiv = document.getElementById('status');
+      statusDiv.style.display = 'block';
+      statusDiv.style.backgroundColor = isError ? '#f8d7da' : '#fff3cd';
+      statusDiv.style.borderColor = isError ? '#f5c6cb' : '#ffeeba';
+      statusDiv.style.color = isError ? '#721c24' : '#856404';
+      statusDiv.textContent = message;
+    }
+
+    /*****************************************************************
+     *  Sound Manager using Web Audio API
+     *****************************************************************/
+    class SoundManager {
+      constructor() {
+        this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        this.activeOscillators = {}; // key: note, value: oscillator and gain node
+        this.masterGain = this.audioCtx.createGain();
+        this.masterGain.gain.value = 0.7; // Master volume
+        this.masterGain.connect(this.audioCtx.destination);
+        this.currentVolume = 0;
+        this.targetVolume = 0;
+        this.volumeStep = 0.02; // Adjust for smoother or faster transitions
+        this.volumeUpdater = setInterval(() => this.updateVolume(), 50);
+        this.isMuted = true;
+        this.toggleMute();
+      }
+
+      toggleMute() {
+        if (this.isMuted) {
+          this.masterGain.gain.value = this.currentVolume;
+          document.getElementById('soundStatus').textContent = "Playing";
+        } else {
+          this.masterGain.gain.value = 0;
+          document.getElementById('soundStatus').textContent = "Muted";
+        }
+        this.isMuted = !this.isMuted;
+      }
+
+      playNote(note, velocity) {
+        if (this.activeOscillators[note]) return; // Note already playing
+
+        const frequency = this.midiToFrequency(note);
+        const oscillator = this.audioCtx.createOscillator();
+        const gainNode = this.audioCtx.createGain();
+
+        oscillator.type = 'sine';
+        oscillator.frequency.value = frequency;
+
+        // Map velocity (1-127) to gain (0.0 - 1.0)
+        const gainValue = velocity / 127;
+        gainNode.gain.value = gainValue;
+
+        oscillator.connect(gainNode);
+        gainNode.connect(this.masterGain);
+
+        oscillator.start();
+        this.activeOscillators[note] = { oscillator, gainNode };
+        log(`Playing note: ${note} (${frequency.toFixed(2)} Hz) with velocity ${velocity}`);
+      }
+
+      stopNote(note) {
+        const osc = this.activeOscillators[note];
+        if (osc) {
+          osc.gainNode.gain.setTargetAtTime(0, this.audioCtx.currentTime, 0.05);
+          osc.oscillator.stop(this.audioCtx.currentTime + 0.1);
+          delete this.activeOscillators[note];
+          log(`Stopped note: ${note}`);
+        }
+      }
+
+      playChord(notes, velocity) {
+        notes.forEach(note => this.playNote(note, velocity));
+      }
+
+      stopAllNotes() {
+        for (let note in this.activeOscillators) {
+          this.stopNote(note);
+        }
+      }
+
+      midiToFrequency(midi) {
+        return 440 * Math.pow(2, (midi - 69) / 12);
+      }
+
+      updateVolume() {
+        if (this.currentVolume < this.targetVolume) {
+          this.currentVolume = Math.min(this.currentVolume + this.volumeStep, this.targetVolume);
+          if (!this.isMuted) {
+            this.masterGain.gain.setTargetAtTime(this.currentVolume, this.audioCtx.currentTime, 0.05);
+          }
+          log(`Master volume increased to: ${this.currentVolume.toFixed(2)}`);
+        } else if (this.currentVolume > this.targetVolume) {
+          this.currentVolume = Math.max(this.currentVolume - this.volumeStep, this.targetVolume);
+          if (!this.isMuted) {
+            this.masterGain.gain.setTargetAtTime(this.currentVolume, this.audioCtx.currentTime, 0.05);
+          }
+          log(`Master volume decreased to: ${this.currentVolume.toFixed(2)}`);
+        }
+      }
+
+      setTargetVolume(volume) {
+        this.targetVolume = Math.min(Math.max(volume, 0), 1);
+      }
+    }
+
+    /*****************************************************************
+     *  Chord Definitions
+     *****************************************************************/
+    const AVAILABLE_CHORDS = {
+      'C Major': {
+        name: 'C',
+        type: 'Major',
+        intervals: [4, 7, 12, 16], // Root, Major 3rd, Perfect 5th, Octave
+        single_notes: { index: 4, middle: 7, ring: 12, pinky: 16 },
+      },
+      'C Minor': {
+        name: 'Cm',
+        type: 'Minor',
+        intervals: [3, 7, 12, 15],
+        single_notes: { index: 3, middle: 7, ring: 12, pinky: 15 },
+      },
+      'D Major': {
+        name: 'D',
+        type: 'Major',
+        intervals: [2, 6, 10, 14],
+        single_notes: { index: 2, middle: 6, ring: 10, pinky: 14 },
+      },
+      'D Minor': {
+        name: 'Dm',
+        type: 'Minor',
+        intervals: [2, 5, 10, 13],
+        single_notes: { index: 2, middle: 5, ring: 10, pinky: 13 },
+      },
+      'E Major': {
+        name: 'E',
+        type: 'Major',
+        intervals: [4, 8, 12, 16],
+        single_notes: { index: 4, middle: 8, ring: 12, pinky: 16 },
+      },
+      'E Minor': {
+        name: 'Em',
+        type: 'Minor',
+        intervals: [3, 7, 12, 15],
+        single_notes: { index: 3, middle: 7, ring: 12, pinky: 15 },
+      },
+      'F Major': {
+        name: 'F',
+        type: 'Major',
+        intervals: [5, 9, 12, 17],
+        single_notes: { index: 5, middle: 9, ring: 12, pinky: 17 },
+      },
+      'F Minor': {
+        name: 'Fm',
+        type: 'Minor',
+        intervals: [5, 8, 12, 16],
+        single_notes: { index: 5, middle: 8, ring: 12, pinky: 16 },
+      },
+      'G Major': {
+        name: 'G',
+        type: 'Major',
+        intervals: [7, 11, 14, 19],
+        single_notes: { index: 7, middle: 11, ring: 14, pinky: 19 },
+      },
+      'G Minor': {
+        name: 'Gm',
+        type: 'Minor',
+        intervals: [7, 10, 14, 17],
+        single_notes: { index: 7, middle: 10, ring: 14, pinky: 17 },
+      },
+      'A Major': {
+        name: 'A',
+        type: 'Major',
+        intervals: [9, 13, 16, 21],
+        single_notes: { index: 9, middle: 13, ring: 16, pinky: 21 },
+      },
+      'A Minor': {
+        name: 'Am',
+        type: 'Minor',
+        intervals: [9, 12, 16, 19],
+        single_notes: { index: 9, middle: 12, ring: 16, pinky: 19 },
+      },
+      'B Major': {
+        name: 'B',
+        type: 'Major',
+        intervals: [11, 15, 18, 23],
+        single_notes: { index: 11, middle: 15, ring: 18, pinky: 23 },
+      },
+      'B Minor': {
+        name: 'Bm',
+        type: 'Minor',
+        intervals: [11, 14, 18, 21],
+        single_notes: { index: 11, middle: 14, ring: 18, pinky: 21 },
+      },
+    };
+
+    // Selected Chords will be mapped to pinches
+    let SELECTED_CHORDS = {
+      1: 'Am', // Default chord for index finger
+      2: 'Dm', // Default chord for middle finger
+      3: 'Em', // Default chord for ring finger
+      4: 'G',  // Default chord for pinky finger
+    };
+
+    function getChordByName(name) {
+      return Object.values(AVAILABLE_CHORDS).find(chord => chord.name === name);
+    }
+
+    function getChordNotes(chordId, octave) {
+      const chordName = SELECTED_CHORDS[chordId];
+      const chord = getChordByName(chordName);
+      if (!chord) return [];
+      const base = 60 + (octave - 4) * 12; // Middle C is 60
+      return chord.intervals.map(interval => base + interval);
+    }
+
+    function getSingleNote(chordId, finger, octave) {
+      const chordName = SELECTED_CHORDS[chordId];
+      const chord = getChordByName(chordName);
+      if (!chord) return null;
+      const base = 60 + (octave - 4) * 12;
+      return base + chord.single_notes[finger];
+    }
+
+    /*****************************************************************
+     *  VelocityTracker with Buffering
+     *****************************************************************/
+    class VelocityTracker {
+      constructor(windowSize=5) {
+        this.windowSize = windowSize;
+        this.positions = [];
+        this.timestamps = [];
+      }
+      update(pos, time) {
+        this.positions.push(pos);
+        this.timestamps.push(time);
+        if (this.positions.length > this.windowSize) {
+          this.positions.shift();
+          this.timestamps.shift();
+        }
+      }
+      calculateVelocity(sensitivity) {
+        if (this.positions.length < 2) return 0;
+        let velocities = [];
+        for (let i = 1; i < this.positions.length; i++) {
+          const p1 = this.positions[i - 1];
+          const p2 = this.positions[i];
+          const dt = this.timestamps[i] - this.timestamps[i - 1] || 1e-6;
+          const dist = Math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2);
+          velocities.push(dist / dt);
+        }
+        const len = velocities.length;
+        // Exponential weighting
+        const weights = [];
+        for (let i = 0; i < len; i++) {
+          // from i-len to 0
+          weights.push(Math.exp((i - len) / len));
+        }
+        const sumWeights = weights.reduce((a,b) => a+b,0);
+        let weightedSum = 0;
+        for (let i = 0; i < len; i++) {
+          weightedSum += velocities[i] * weights[i];
+        }
+        let weightedVelocity = weightedSum / sumWeights;
+        let scaledVelocity = Math.min(Math.max(weightedVelocity * 1000 * sensitivity, 1), 127);
+        return Math.round(scaledVelocity);
+      }
+    }
+
+    /*****************************************************************
+     *  SSI_Detector with Buffering
+     *****************************************************************/
+    function distance2D(x1, y1, x2, y2) {
+      return Math.sqrt((x1 - x2)**2 + (y1 - y2)**2);
+    }
+    function getOctaveFromPosition(y, height) {
+      // top => 5, bottom => 2
+      const rel = y / height;
+      if (rel < 0.25) return 5;
+      if (rel < 0.50) return 4;
+      if (rel < 0.75) return 3;
+      return 2;
+    }
+
+    class SSI_Detector {
+      constructor(soundManager) {
+        this.velocityTracker = new VelocityTracker();
+        this.active_chord = null;
+        this.current_notes = [];
+        this.note_on = false;
+        this.current_velocity = 0;
+        this.current_octave = 4;
+        this.previous_octave = 4;
+        this.previous_pinch_left = false;
+        this.previous_pinch_right = false;
+        this.pinch_start_time = null;
+        this.last_pinch_duration = Infinity;
+        this.is_slap_mode = false;
+        this.current_finger = null;
+
+        // For smoothing CC7 transitions
+        this.current_volume = 0;
+        this.target_volume = 0;
+        this.volume_step = 2; // Adjust for smoother or faster transitions
+
+        // Buffer for missed frames
+        this.bufferSize = 5; // Number of frames to buffer
+        this.handBuffer = {
+          left: [],
+          right: []
+        };
+
+        // Sound Manager
+        this.soundManager = soundManager;
+      }
+
+      stopCurrentNotes() {
+        this.soundManager.stopAllNotes();
+        this.current_notes = [];
+        this.note_on = false;
+        // Reset target volume to 0 to ensure no lingering volume
+        this.target_volume = 0;
+        log("All sounds stopped.");
+      }
+
+      playCurrentChord() {
+        if (this.active_chord) {
+          const notes = getChordNotes(this.active_chord, this.current_octave);
+          const velocity = this.is_slap_mode ? 60 : this.current_velocity;
+          this.soundManager.playChord(notes, velocity);
+          this.current_notes = notes;
+          this.note_on = true;
+          // Set initial target volume based on velocity
+          this.target_volume = this.current_velocity / 127;
+          log(`Playing chord: ${getChordByName(SELECTED_CHORDS[this.active_chord]).name} with velocity ${velocity}`);
+        }
+      }
+
+      playSingleNote(finger) {
+        if (this.active_chord) {
+          this.stopCurrentNotes();
+          const note = getSingleNote(this.active_chord, finger, this.current_octave);
+          if (note === null) return;
+          const velocity = this.is_slap_mode ? 60 : this.current_velocity;
+          this.soundManager.playNote(note, velocity);
+          this.current_notes = [note];
+          this.note_on = true;
+          // Set initial target volume based on velocity
+          this.target_volume = this.current_velocity / 127;
+          log(`Playing single note: ${note} with velocity ${velocity}`);
+        }
+      }
+
+      updateVelocityAndOctave(rightWrist, sensitivity, windowSize, height) {
+        if (!rightWrist) return;
+        const t = performance.now() / 1000;
+        const pos = [rightWrist.x, rightWrist.y];
+
+        // Update buffer
+        this.handBuffer.right.push({ pos, time: t });
+        if (this.handBuffer.right.length > this.bufferSize) {
+          this.handBuffer.right.shift();
+        }
+
+        // Re-init velocity tracker if window size changed
+        if (this.velocityTracker.windowSize !== windowSize) {
+          this.velocityTracker = new VelocityTracker(windowSize);
+        }
+
+        // Calculate velocity using buffered positions
+        for (let frame of this.handBuffer.right) {
+          this.velocityTracker.update(frame.pos, frame.time);
+        }
+
+        const new_velocity = this.velocityTracker.calculateVelocity(sensitivity);
+        if (new_velocity !== this.current_velocity) {
+          this.current_velocity = new_velocity;
+          if (this.note_on) {
+            // Update target volume based on new velocity
+            this.target_volume = this.current_velocity / 127;
+            log(`Velocity updated to: ${this.current_velocity}`);
+          }
+        }
+
+        // Calculate octave
+        const newOctave = getOctaveFromPosition(rightWrist.y * height, height);
+        if (newOctave !== this.current_octave) {
+          this.current_octave = newOctave;
+          log(`Octave changed to: ${this.current_octave}`);
+          if (this.note_on) {
+            // Stop current notes and play new chord/note in the new octave
+            this.stopCurrentNotes();
+            if (this.previous_pinch_left) {
+              this.playCurrentChord();
+            } else if (this.previous_pinch_right && this.current_finger) {
+              this.playSingleNote(this.current_finger);
+            }
+          }
+        }
+      }
+
+      detectPinchRelease(results, hand) {
+        const handLandmarks = (hand === 'right') ? results.rightHandLandmarks : results.leftHandLandmarks;
+        if (!handLandmarks) {
+          if (hand === 'left') {
+            this.previous_pinch_left = false;
+          } else {
+            this.previous_pinch_right = false;
+          }
+          return;
+        }
+        // THUMB_TIP = 4, finger tips: index=8, middle=12, ring=16, pinky=20
+        const thumbTip = handLandmarks[4];
+        const fingers = {
+          index: 8,
+          middle: 12,
+          ring: 16,
+          pinky: 20
+        };
+
+        const pinchThreshold = 0.05;
+        let activePinch = null;
+        for (let fingerName in fingers) {
+          let idx = fingers[fingerName];
+          const dist = distance2D(thumbTip.x, thumbTip.y, handLandmarks[idx].x, handLandmarks[idx].y);
+          if (dist < pinchThreshold) {
+            activePinch = fingerName;
+            break;
+          }
+        }
+
+        let prevPinch = (hand === 'right') ? this.previous_pinch_right : this.previous_pinch_left;
+        const currentTime = performance.now() / 1000;
+
+        // Pinch start
+        if (activePinch && !prevPinch) {
+          if (hand === 'left') {
+            // Left hand => chord selection
+            if (this.note_on) {
+              this.stopCurrentNotes();
+            }
+            const chordMap = { index: 1, middle: 2, ring: 3, pinky: 4 };
+            const selectedChordName = SELECTED_CHORDS[chordMap[activePinch]];
+            const chord = getChordByName(selectedChordName);
+            if (chord) {
+              this.active_chord = chordMap[activePinch];
+              log("Chord " + chord.name + " selected");
+              if (this.note_on) {
+                this.playCurrentChord();
+              }
+            } else {
+              log("Selected chord not found", true);
+            }
+          } else {
+            // Right hand => play note or chord
+            this.pinch_start_time = currentTime;
+            this.is_slap_mode = (this.current_velocity < 20 && this.last_pinch_duration < 0.2);
+            this.current_finger = activePinch;
+            if (this.previous_pinch_left) {
+              this.playCurrentChord();
+            } else {
+              if (this.active_chord) {
+                this.playSingleNote(activePinch);
+              }
+            }
+            this.note_on = true;
+          }
+        }
+        // Pinch end
+        if (!activePinch && prevPinch && hand === 'right' && this.note_on) {
+          if (this.pinch_start_time) {
+            this.last_pinch_duration = currentTime - this.pinch_start_time;
+          }
+          this.stopCurrentNotes();
+          this.note_on = false;
+          this.is_slap_mode = false;
+        }
+
+        if (hand === 'right') {
+          this.previous_pinch_right = !!activePinch;
+        } else {
+          this.previous_pinch_left = !!activePinch;
+        }
+      }
+
+      // Smoothly transition volume towards target_volume
+      smoothVolumeTransition() {
+        if (this.soundManager.isMuted) return;
+        if (this.soundManager.currentVolume < this.target_volume) {
+          this.soundManager.setTargetVolume(this.soundManager.currentVolume + 0.02);
+          log(`Master volume increased to: ${this.soundManager.currentVolume.toFixed(2)}`);
+        } else if (this.soundManager.currentVolume > this.target_volume) {
+          this.soundManager.setTargetVolume(this.soundManager.currentVolume - 0.02);
+          log(`Master volume decreased to: ${this.soundManager.currentVolume.toFixed(2)}`);
+        }
+      }
+    }
+
+    /*****************************************************************
+     *  Main
+     *****************************************************************/
+    const videoElement = document.getElementById('videoElement');
+    const canvasElement = document.getElementById('outputCanvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    // Initialize Sound Manager
+    const soundManager = new SoundManager();
+
+    // Our instrument logic
+    const ssiDetector = new SSI_Detector(soundManager);
+
+    // Range controls & info panel
+    const sensitivityRangeEl = document.getElementById('sensitivityRange');
+    const windowRangeEl = document.getElementById('windowRange');
+    const sensitivityValueEl = document.getElementById('sensitivityValue');
+    const windowValueEl = document.getElementById('windowValue');
+    const activeChordEl = document.getElementById('activeChord');
+    const currentOctaveEl = document.getElementById('currentOctave');
+    const velocityValEl = document.getElementById('velocityVal');
+    const modeValEl = document.getElementById('modeVal');
+
+    // Chord selection elements
+    const chord1Select = document.getElementById('chord1Select');
+    const chord2Select = document.getElementById('chord2Select');
+    const chord3Select = document.getElementById('chord3Select');
+    const chord4Select = document.getElementById('chord4Select');
+
+    // Populate chord selection dropdowns
+    function populateChordSelectors() {
+      const selectElements = [chord1Select, chord2Select, chord3Select, chord4Select];
+      for (let select of selectElements) {
+        // Add a default empty option
+        const defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.text = '-- Select Chord --';
+        select.appendChild(defaultOption);
+        // Populate with available chords
+        for (let chordName in AVAILABLE_CHORDS) {
+          const option = document.createElement('option');
+          option.value = AVAILABLE_CHORDS[chordName].name;
+          option.text = chordName;
+          select.appendChild(option);
+        }
+      }
+      // Set default selections
+      chord1Select.value = 'Am';
+      chord2Select.value = 'Dm';
+      chord3Select.value = 'Em';
+      chord4Select.value = 'G';
+    }
+
+    populateChordSelectors();
+
+    // Update SELECTED_CHORDS based on user selection
+    function updateSelectedChords() {
+      const previousSelectedChords = { ...SELECTED_CHORDS }; // Clone previous state
+      SELECTED_CHORDS[1] = chord1Select.value || 'Am';
+      SELECTED_CHORDS[2] = chord2Select.value || 'Dm';
+      SELECTED_CHORDS[3] = chord3Select.value || 'Em';
+      SELECTED_CHORDS[4] = chord4Select.value || 'G';
+      log(`Selected Chords Updated: ${SELECTED_CHORDS[1]}, ${SELECTED_CHORDS[2]}, ${SELECTED_CHORDS[3]}, ${SELECTED_CHORDS[4]}`);
+
+      // Check if active chord has been changed via dropdown
+      if (ssiDetector.active_chord && previousSelectedChords[ssiDetector.active_chord] !== SELECTED_CHORDS[ssiDetector.active_chord]) {
+        if (ssiDetector.note_on) {
+          ssiDetector.stopCurrentNotes();
+          ssiDetector.playCurrentChord();
+          log(`Active chord changed to: ${SELECTED_CHORDS[ssiDetector.active_chord]}`);
+        }
+        activeChordEl.textContent = ssiDetector.active_chord
+          ? getChordByName(SELECTED_CHORDS[ssiDetector.active_chord]).name
+          : "None";
+      }
+    }
+
+    chord1Select.addEventListener('change', updateSelectedChords);
+    chord2Select.addEventListener('change', updateSelectedChords);
+    chord3Select.addEventListener('change', updateSelectedChords);
+    chord4Select.addEventListener('change', updateSelectedChords);
+
+    function updateSliders() {
+      const sVal = parseFloat(sensitivityRangeEl.value) / 100;
+      const wVal = parseInt(windowRangeEl.value);
+      sensitivityValueEl.textContent = sVal.toFixed(2);
+      windowValueEl.textContent = wVal;
+    }
+    sensitivityRangeEl.addEventListener('input', updateSliders);
+    windowRangeEl.addEventListener('input', updateSliders);
+    updateSliders();
+
+    // Draw horizontal lines to indicate octave zones
+    function drawOctaveZones() {
+      const h = canvasElement.height;
+      const w = canvasElement.width;
+      canvasCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+      canvasCtx.lineWidth = 2;
+      canvasCtx.beginPath();
+      canvasCtx.moveTo(0, h*0.25); canvasCtx.lineTo(w, h*0.25);
+      canvasCtx.moveTo(0, h*0.50); canvasCtx.lineTo(w, h*0.50);
+      canvasCtx.moveTo(0, h*0.75); canvasCtx.lineTo(w, h*0.75);
+      canvasCtx.stroke();
+
+      canvasCtx.fillStyle = 'white';
+      canvasCtx.font = '16px Arial';
+      canvasCtx.fillText('Octave 5', 10, h*0.25 - 5);
+      canvasCtx.fillText('Octave 4', 10, h*0.50 - 5);
+      canvasCtx.fillText('Octave 3', 10, h*0.75 - 5);
+      canvasCtx.fillText('Octave 2', 10, h - 5);
+    }
+
+    // Draw landmarks
+    function drawHandLandmarks(landmarks, isLeft) {
+      // Use drawing_utils
+      window.drawConnectors(canvasCtx, landmarks, window.HAND_CONNECTIONS,
+        {color: 'white', lineWidth: 2},
+        {color: 'white', radius: 2}
+      );
+      // Finger-tip logic
+      const fingerMap = { index:8, middle:12, ring:16, pinky:20 };
+      for (let fingerName in fingerMap) {
+        let idx = fingerMap[fingerName];
+        let x = landmarks[idx].x * canvasElement.width;
+        let y = landmarks[idx].y * canvasElement.height;
+        if (isLeft) {
+          // Chord selection labels
+          const chordMap = { index:1, middle:2, ring:3, pinky:4 };
+          const chordId = chordMap[fingerName];
+          const chordName = getChordByName(SELECTED_CHORDS[chordId]).name;
+          const activeChord = (ssiDetector.active_chord === chordId);
+          canvasCtx.fillStyle = activeChord ? 'orange' : 'white';
+          canvasCtx.font = '14px Arial';
+          canvasCtx.fillText(chordName, x+6, y);
+        } else {
+          // Highlight currently active finger
+          if (ssiDetector.current_finger === fingerName && ssiDetector.previous_pinch_right) {
+            canvasCtx.beginPath();
+            canvasCtx.fillStyle = 'orange';
+            canvasCtx.arc(x, y, 10, 0, 2*Math.PI);
+            canvasCtx.fill();
+          }
+        }
+      }
+    }
+
+    /*****************************************************************
+     *  Camera & Holistic Initialization
+     *****************************************************************/
+    async function initializeCamera() {
+      try {
+        const constraints = {
+          video: { width: 640, height: 480 }
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        videoElement.srcObject = stream;
+        return new Promise((resolve) => {
+          videoElement.onloadedmetadata = () => {
+            log('Camera initialized successfully');
+            updateStatus('Camera ready');
+            // Hide status after a few seconds
+            setTimeout(() => {
+              document.getElementById('status').style.display = 'none';
+            }, 3000);
+            resolve(stream);
+          };
+        });
+      } catch (error) {
+        const errorMessage = `Camera access error: ${error.message}`;
+        log(errorMessage, true);
+        updateStatus(errorMessage, true);
+        throw error;
+      }
+    }
+
+    async function initializeHolistic() {
+      try {
+        const holistic = new window.Holistic({
+          locateFile: (file) => {
+            // using the same version as your working code
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1635989137/${file}`;
+          }
+        });
+        holistic.setOptions({
+          modelComplexity: 1,
+          smoothLandmarks: true,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+        log('Holistic model initialized');
+        return holistic;
+      } catch (error) {
+        const errorMessage = `Holistic initialization error: ${error.message}`;
+        log(errorMessage, true);
+        updateStatus(errorMessage, true);
+        throw error;
+      }
+    }
+
+    /*****************************************************************
+     *  Main Loop
+     *****************************************************************/
+    async function startApp() {
+      try {
+        updateStatus('Initializing camera...');
+        await initializeCamera();
+        updateStatus('Loading gesture detection model...');
+        const holistic = await initializeHolistic();
+
+        holistic.onResults(onHolisticResults);
+
+        function onHolisticResults(results) {
+          try {
+            // Draw camera image to canvas
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(
+              results.image, 0, 0, canvasElement.width, canvasElement.height
+            );
+            // If hands are present, draw them
+            if (results.leftHandLandmarks) {
+              drawHandLandmarks(results.leftHandLandmarks, true);
+            }
+            if (results.rightHandLandmarks) {
+              drawHandLandmarks(results.rightHandLandmarks, false);
+            }
+            // Octave zone lines
+            drawOctaveZones();
+            // Update velocity & octave
+            let sensitivity = parseFloat(sensitivityRangeEl.value) / 100;
+            let windowSize = parseInt(windowRangeEl.value);
+            let rightWrist = (results.rightHandLandmarks && results.rightHandLandmarks.length > 0)
+                              ? results.rightHandLandmarks[0]
+                              : null;
+            ssiDetector.updateVelocityAndOctave(rightWrist, sensitivity, windowSize, canvasElement.height);
+
+            // Pinch detection
+            ssiDetector.detectPinchRelease(results, 'left');
+            ssiDetector.detectPinchRelease(results, 'right');
+
+            // If right hand is not detected and notes are active, stop all notes
+            if (!rightWrist && ssiDetector.note_on) {
+              ssiDetector.stopCurrentNotes();
+              log("Right hand lost from frame. All sounds stopped.");
+            }
+
+            // Smooth volume transitions
+            if (ssiDetector.note_on) {
+              ssiDetector.smoothVolumeTransition();
+            }
+
+            // Draw velocity dot if right wrist exists
+            if (rightWrist) {
+              const v = ssiDetector.current_velocity;
+              let radius = Math.min(20, Math.max(5, v / 5));
+              canvasCtx.beginPath();
+              canvasCtx.fillStyle = 'blue';
+              canvasCtx.arc(
+                rightWrist.x * canvasElement.width,
+                rightWrist.y * canvasElement.height,
+                radius, 0, 2*Math.PI
+              );
+              canvasCtx.fill();
+            }
+            // Update info panel
+            activeChordEl.textContent = ssiDetector.active_chord
+              ? getChordByName(SELECTED_CHORDS[ssiDetector.active_chord]).name
+              : "None";
+            currentOctaveEl.textContent = ssiDetector.current_octave;
+            velocityValEl.textContent = ssiDetector.current_velocity;
+            modeValEl.textContent = ssiDetector.previous_pinch_left
+              ? "Chord"
+              : (ssiDetector.previous_pinch_right ? "Single Note" : "None");
+            canvasCtx.restore();
+          } catch (err) {
+            log(`onHolisticResults error: ${err.message}`, true);
+          }
+        }
+
+        // Send frames to Holistic
+        async function processFrame() {
+          try {
+            await holistic.send({image: videoElement});
+          } catch (error) {
+            log(`Frame processing error: ${error.message}`, true);
+          }
+          requestAnimationFrame(processFrame);
+        }
+        videoElement.addEventListener('loadeddata', () => {
+          log('Starting detection loop');
+          processFrame();
+        });
+      } catch (error) {
+        updateStatus(`Failed to start: ${error.message}`, true);
+      }
+    }
+
+    window.addEventListener('load', startApp);
+  </script>
+
+  <!-- User Manual -->
+  <div id="manual">
+    <h2>Quick User Guide</h2>
+
+    <h3>Basic Controls</h3>
+    <ul>
+      <li><strong>Left Hand:</strong> Selects chords by pinching thumb with different fingers
+        <ul>
+          <li>Thumb + Index: Chord 1</li>
+          <li>Thumb + Middle: Chord 2</li>
+          <li>Thumb + Ring: Chord 3</li>
+          <li>Thumb + Pinky: Chord 4</li>
+        </ul>
+      </li>
+      <li><strong>Right Hand:</strong> Plays notes/chords and controls velocity
+        <ul>
+          <li>Pinch any finger with thumb to play</li>
+          <li>Move faster for louder sounds</li>
+          <li>Move slower for softer sounds</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3>Chord Selection</h3>
+    <p>Select any 4 major or minor chords from the dropdown menus to customize your instrument.</p>
+
+    <h3>Octave Control</h3>
+    <p>Move your right hand up/down to change octaves:</p>
+    <ul>
+      <li>Top area: Octave 5</li>
+      <li>Upper middle: Octave 4</li>
+      <li>Lower middle: Octave 3</li>
+      <li>Bottom: Octave 2</li>
+    </ul>
+
+    <h3>Velocity Sensitivity Levels</h3>
+    <p>The velocity of your hand movement is divided into three levels:</p>
+    <ul>
+      <li><strong>Low Sensitivity (1-42):</strong> Gentle movements produce softer sounds.</li>
+      <li><strong>Medium Sensitivity (43-85):</strong> Moderate movements produce medium volume sounds.</li>
+      <li><strong>High Sensitivity (86-127):</strong> Vigorous movements produce loud sounds.</li>
+    </ul>
+    <p>Adjust the <strong>Base Sensitivity</strong> slider to modify how your movements influence the velocity.</p>
+
+    <h3>Playing Modes</h3>
+    <ol>
+      <li><strong>Chord Mode:</strong> Hold left hand pinch while playing with right hand.</li>
+      <li><strong>Single Note Mode:</strong> Just use right hand pinches (different fingers play different notes).</li>
+      <li><strong>Slap Mode:</strong> Activated by quick, short pinches with low velocity.</li>
+    </ol>
+
+    <h3>Tips</h3>
+    <ul>
+      <li>Watch the blue dot on your right hand - bigger means more velocity.</li>
+      <li>Use the sensitivity slider to adjust how movement affects volume.</li>
+      <li>Check the info panel to see your current chord, octave, and mode.</li>
+      <li>Customize your chords using the dropdown menus for a personalized experience.</li>
+    </ul>
+  </div>
+
+</body>
+</html>
